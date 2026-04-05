@@ -20,7 +20,27 @@ class Encoder(nn.Module):
         # outputs = [batch size, src len, hid dim]
         # hidden = [n layers, batch size, hid dim]
         # cell = [n layers, batch size, hid dim]
-        return hidden, cell
+        return outputs, hidden, cell
+
+class Attention(nn.Module):
+    def __init__(self, hid_dim):
+        super().__init__()
+        self.attn = nn.Linear(hid_dim * 2, hid_dim)
+        self.v = nn.Linear(hid_dim, 1, bias=False)
+        
+    def forward(self, hidden, encoder_outputs):
+        # hidden = [batch size, dec hid dim]
+        # encoder_outputs = [batch size, src len, enc hid dim]
+        batch_size = encoder_outputs.shape[0]
+        src_len = encoder_outputs.shape[1]
+        
+        # repeat decoder hidden state src_len times
+        hidden = hidden.unsqueeze(1).repeat(1, src_len, 1)
+        
+        energy = torch.tanh(self.attn(torch.cat((hidden, encoder_outputs), dim=2))) 
+        attention = self.v(energy).squeeze(2)
+        
+        return F.softmax(attention, dim=1)
 
 class Decoder(nn.Module):
     def __init__(self, output_size, emb_dim, hid_dim, n_layers, dropout):
@@ -29,14 +49,16 @@ class Decoder(nn.Module):
         self.hid_dim = hid_dim
         self.n_layers = n_layers
         self.embedding = nn.Embedding(output_size, emb_dim)
-        self.rnn = nn.LSTM(emb_dim, hid_dim, n_layers, dropout=dropout, batch_first=True)
-        self.fc_out = nn.Linear(hid_dim, output_size)
+        self.attention = Attention(hid_dim)
+        self.rnn = nn.LSTM(emb_dim + hid_dim, hid_dim, n_layers, dropout=dropout, batch_first=True)
+        self.fc_out = nn.Linear(hid_dim * 2 + emb_dim, output_size)
         self.dropout = nn.Dropout(dropout)
         
-    def forward(self, input, hidden, cell):
+    def forward(self, input, hidden, cell, encoder_outputs):
         # input = [batch size] (current token)
         # hidden = [n layers, batch size, hid dim]
         # cell = [n layers, batch size, hid dim]
+        # encoder_outputs = [batch size, src len, hid dim]
         
         input = input.unsqueeze(1)
         # input = [batch size, 1]
@@ -44,12 +66,22 @@ class Decoder(nn.Module):
         embedded = self.dropout(self.embedding(input))
         # embedded = [batch size, 1, emb dim]
         
-        output, (hidden, cell) = self.rnn(embedded, (hidden, cell))
-        # output = [batch size, seq len (1), hid dim]
-        # hidden = [n layers, batch size, hid dim]
-        # cell = [n layers, batch size, hid dim]
+        # calculate attention
+        a = self.attention(hidden[-1], encoder_outputs)
+        a = a.unsqueeze(1)
+        # a = [batch size, 1, src len]
         
-        prediction = self.fc_out(output.squeeze(1))
+        # calculate context layer
+        context = torch.bmm(a, encoder_outputs)
+        # context = [batch size, 1, hid dim]
+        
+        rnn_input = torch.cat((embedded, context), dim=2)
+        # rnn_input = [batch size, 1, emb dim + hid dim]
+        
+        output, (hidden, cell) = self.rnn(rnn_input, (hidden, cell))
+        # output = [batch size, seq len (1), hid dim]
+        
+        prediction = self.fc_out(torch.cat((output.squeeze(1), context.squeeze(1), embedded.squeeze(1)), dim=1))
         # prediction = [batch size, output size]
         
         return prediction, hidden, cell
@@ -77,7 +109,7 @@ class Seq2Seq(nn.Module):
         outputs = torch.zeros(batch_size, trg_len, trg_vocab_size).to(self.device)
         
         # last hidden state of the encoder is used as the initial hidden state of the decoder
-        hidden, cell = self.encoder(src)
+        encoder_outputs, hidden, cell = self.encoder(src)
         
         # first input to the decoder is the <sos> tokens
         input = trg[:, 0]
@@ -85,7 +117,7 @@ class Seq2Seq(nn.Module):
         for t in range(1, trg_len):
             # insert input token embedding, previous hidden and previous cell states
             # receive output tensor (predictions) and new hidden and cell states
-            output, hidden, cell = self.decoder(input, hidden, cell)
+            output, hidden, cell = self.decoder(input, hidden, cell, encoder_outputs)
             
             # place predictions in a tensor holding predictions for each token
             outputs[:, t, :] = output

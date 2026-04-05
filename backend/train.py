@@ -6,11 +6,17 @@ from data_loader import get_loaders
 import os
 import tqdm
 
-def train_model(task="en-hi", epochs=1):
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Using device: {device} for task {task}")
+def train_model(task="en-hi", epochs=15):
+    if torch.cuda.is_available():
+        device = torch.device('cuda')
+    elif torch.backends.mps.is_available():
+        device = torch.device('mps')
+    else:
+        device = torch.device('cpu')
+    print(f"🚀 Using MacBook GPU (MPS) for task {task}") if device.type == 'mps' else print(f"Using device: {device} for task {task}")
     
-    loader, src_tokenizer, trg_tokenizer = get_loaders(task=task, batch_size=8)
+    # Using more realistic data slices for actual training
+    loader, src_tokenizer, trg_tokenizer = get_loaders(task=task, batch_size=32)
     
     INPUT_DIM = src_tokenizer.vocab_size
     OUTPUT_DIM = trg_tokenizer.vocab_size
@@ -25,6 +31,16 @@ def train_model(task="en-hi", epochs=1):
     dec = Decoder(OUTPUT_DIM, DEC_EMB_DIM, HID_DIM, N_LAYERS, DEC_DROPOUT)
     
     model = Seq2Seq(enc, dec, device).to(device)
+    
+    # NEW: Check if model already exists to resume training
+    save_path = f"model_{task}.pt"
+    if os.path.exists(save_path):
+        print(f"🔄 Resuming from existing model: {save_path}")
+        try:
+            checkpoint = torch.load(save_path, map_location=device, weights_only=False)
+            model.load_state_dict(checkpoint['model_state_dict'])
+        except Exception as e:
+            print(f"⚠️ Could not load checkpoint, starting fresh. Error: {e}")
     
     optimizer = optim.Adam(model.parameters())
     criterion = nn.CrossEntropyLoss(ignore_index=trg_tokenizer.pad_token_id)
@@ -44,10 +60,11 @@ def train_model(task="en-hi", epochs=1):
             # trg = [batch size, trg len]
             
             output_dim = output.shape[-1]
-            output = output[1:].view(-1, output_dim)
-            trg = trg[1:].view(-1)
             
-            # Use smaller slice for quick feedback if needed
+            # Use [:, 1:] to skip the <sos> token in the target and the corresponding first output
+            output = output[:, 1:].reshape(-1, output_dim)
+            trg = trg[:, 1:].reshape(-1)
+            
             loss = criterion(output, trg)
             loss.backward()
             optimizer.step()
@@ -67,5 +84,15 @@ def train_model(task="en-hi", epochs=1):
     print(f"Model saved to {save_path}")
 
 if __name__ == "__main__":
-    train_model(task="en-hi", epochs=1)
-    train_model(task="en-es", epochs=1)
+    import argparse
+    parser = argparse.ArgumentParser(description="Train translation models")
+    parser.add_argument('--task', type=str, default='all', choices=['all', 'en-hi', 'en-es', 'en-fr'])
+    parser.add_argument('--epochs', type=int, default=10)
+    args = parser.parse_args()
+    
+    if args.task == 'all':
+        train_model(task="en-hi", epochs=args.epochs)
+        train_model(task="en-es", epochs=args.epochs)
+        train_model(task="en-fr", epochs=args.epochs)
+    else:
+        train_model(task=args.task, epochs=args.epochs)

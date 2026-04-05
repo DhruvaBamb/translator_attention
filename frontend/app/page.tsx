@@ -9,32 +9,61 @@ export default function Home() {
   const [outputText, setOutputText] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [modelStatus, setModelStatus] = useState("Initializing...");
+  const [selectedImage, setSelectedImage] = useState<File | null>(null);
+  const [imagePreview, setImagePreview] = useState<string | null>(null);
 
   const tabs = [
     { id: "hi", name: "English → Hindi", desc: "Machine Translation (Kaggle Dataset)" },
     { id: "es", name: "English → Spanish", desc: "Machine Translation (Opus Books)" },
+    { id: "fr", name: "English → French", desc: "Machine Translation (Opus Books)" },
     { id: "summary", name: "Summarization", desc: "Text Condensing (Real-world App)" },
+    { id: "caption", name: "Image Captioning", desc: "Vision-to-Language (BLIP Model)" },
   ];
 
   const handleAction = async () => {
-    if (!inputText.trim()) return;
+    if (activeTab !== "caption" && !inputText.trim()) return;
+    if (activeTab === "caption" && !selectedImage) {
+      alert("Please select an image first.");
+      return;
+    }
+
     setIsLoading(true);
     try {
-      let endpoint = activeTab === "summary" ? "/summarize" : `/translate/${activeTab}`;
-      let body = activeTab === "summary" ? { text: inputText } : { text: inputText };
-      
-      const response = await fetch(`http://localhost:8000${endpoint}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
+      let response;
+      if (activeTab === "caption" && selectedImage) {
+        const formData = new FormData();
+        formData.append("file", selectedImage);
+        response = await fetch("http://localhost:8000/caption", {
+          method: "POST",
+          body: formData,
+        });
+      } else {
+        const endpoint = activeTab === "summary" ? "/summarize" : `/translate/${activeTab}`;
+        response = await fetch(`http://localhost:8000${endpoint}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: inputText }),
+        });
+      }
+
       const data = await response.json();
-      setOutputText(data.translated_text || data.summary || "No output received.");
+      setOutputText(data.translated_text || data.summary || data.caption || "No output received.");
     } catch (err) {
-      // Fallback for demo if backend is not running
-      setOutputText(`[DEMO MODE] Could not connect to backend. Please ensure the FastAPI server is running at localhost:8000. \nInput: ${inputText}`);
+      setOutputText(`[DEMO MODE] Could not connect to backend. Please ensure the FastAPI server is running at localhost:8000.`);
     }
     setIsLoading(false);
+  };
+
+  const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      setSelectedImage(file);
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setImagePreview(reader.result as string);
+      };
+      reader.readAsDataURL(file);
+    }
   };
 
   return (
@@ -103,12 +132,39 @@ export default function Home() {
         <div style={{ display: "flex", gap: "2rem" }}>
           <div style={{ flex: 1 }}>
             <h4 style={{ marginBottom: "0.5rem", color: "var(--text-dim)" }}>Source Input</h4>
-            <textarea
-              className="input-area"
-              placeholder={activeTab === "summary" ? "Enter long text to summarize..." : "Enter text to translate..."}
-              value={inputText}
-              onChange={(e) => setInputText(e.target.value)}
-            />
+            {activeTab === "caption" ? (
+              <div 
+                className="input-area" 
+                style={{ 
+                  display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", 
+                  gap: "1rem", border: "2px dashed var(--border)", cursor: "pointer", position: "relative"
+                }}
+                onClick={() => document.getElementById('imageInput')?.click()}
+              >
+                {imagePreview ? (
+                  <img src={imagePreview} alt="Preview" style={{ maxWidth: "100%", maxHeight: "200px", borderRadius: "0.5rem" }} />
+                ) : (
+                  <div style={{ textAlign: "center" }}>
+                    <p>Click to upload image</p>
+                    <p style={{ fontSize: "0.8rem", opacity: 0.5 }}>PNG, JPG or WebP</p>
+                  </div>
+                )}
+                <input 
+                  id="imageInput" 
+                  type="file" 
+                  hidden 
+                  accept="image/*" 
+                  onChange={handleImageChange} 
+                />
+              </div>
+            ) : (
+              <textarea
+                className="input-area"
+                placeholder={activeTab === "summary" ? "Enter long text to summarize..." : "Enter text to translate..."}
+                value={inputText}
+                onChange={(e) => setInputText(e.target.value)}
+              />
+            )}
           </div>
           <div style={{ flex: 1 }}>
             <h4 style={{ marginBottom: "0.5rem", color: "var(--text-dim)" }}>Predicted Output</h4>
@@ -128,25 +184,41 @@ export default function Home() {
       {/* Architecture Deep Dive */}
       <section style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "3rem", marginBottom: "6rem" }}>
         <div className="glass" style={{ padding: "2rem" }}>
-          <h3 style={{ marginBottom: "1rem" }} className="gradient-text">The Encoder</h3>
+          <h3 style={{ marginBottom: "1rem" }} className="gradient-text">
+            {activeTab === "caption" ? "Vision Encoder (CNN/ViT)" : "Text Encoder (LSTM/Transformer)"}
+          </h3>
           <p style={{ color: "var(--text-dim)" }}>
-            The encoder processes the input sequence and compresses it into a high-dimensional context vector. We utilize a multilayer LSTM architecture to capture long-range dependencies and contextual semantic relationships.
+            {activeTab === "caption" 
+              ? "The vision encoder (using ResNet or ViT) extracts high-level spatial features from the input image. These features are then projected into a shared embedding space for the decoder."
+              : "The encoder processes the input sequence and compresses it into a high-dimensional context vector. We utilize specialized layers to capture long-range dependencies."}
           </p>
           <ul style={{ marginTop: "1rem", listStyle: "none", color: "var(--text-dim)" }}>
-            <li>• Embedding layer: Dimensionality Reduction</li>
-            <li>• LSTM Stack: Hidden State extraction</li>
-            <li>• Dropout (0.5): Regularization for stability</li>
+            {activeTab === "caption" ? (
+              <>
+                <li>• Convolutional Layers: Feature extraction</li>
+                <li>• Global Average Pooling: Spatial reduction</li>
+                <li>• Linear Projection: Hidden state alignment</li>
+              </>
+            ) : (
+              <>
+                <li>• Embedding layer: Dimensionality Reduction</li>
+                <li>• Hidden State extraction: capturing context</li>
+                <li>• Regularization: Ensuring generalization</li>
+              </>
+            )}
           </ul>
         </div>
         <div className="glass" style={{ padding: "2rem" }}>
           <h3 style={{ marginBottom: "1rem" }} className="gradient-text">The Decoder</h3>
           <p style={{ color: "var(--text-dim)" }}>
-            The decoder unrolls the context vector to generate the target sequence. It maintains a state of the previous predictions to ensure consistency across the generated text tokens.
+            {activeTab === "summary" 
+              ? "The decoder generates a condensed version of the input, focusing on the most salient information using attention mechanisms (like in T5)."
+              : "The decoder unrolls the context vector to generate the target sequence (text/caption). It maintains state consistency across generated tokens."}
           </p>
           <ul style={{ marginTop: "1rem", listStyle: "none", color: "var(--text-dim)" }}>
-            <li>• Linear FC: Probability distribution over the vocabulary</li>
-            <li>• Greedy/Beam Search decoding strategy</li>
-            <li>• Cross-entropy optimized loss</li>
+            <li>• Softmax layer: Vocab probability distribution</li>
+            <li>• Auto-regressive decoding strategy</li>
+            <li>• Contextualized output generation</li>
           </ul>
         </div>
       </section>
